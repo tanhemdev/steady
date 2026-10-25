@@ -1,4 +1,7 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}.carenote{border:1px solid var(--line);border-radius:14px;background:var(--surface-2);padding:12px 14px;margin:12px 0}
+.carenote .eyebrow{font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+.carenote ul{margin:0;padding-left:18px}.carenote li{margin:0 0 4px;line-height:1.4}
+</style></head><body>
 <title>Steady</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1180,6 +1183,7 @@ function scoreSpeech(heard){
   }
   sp.noHear = false;
   const ok = wordMatches(sp.heard, c.word, !!c.promoted);
+  sp.triesN = (sp.triesN || 0) + 1; if(ok) sp.correctN = (sp.correctN || 0) + 1;
   sp.match = ok ? 100 : 0;
   if(ok){
     sp.phase = 'success'; sp.wrong = 0; sp.praise = 'Correct';
@@ -2232,6 +2236,13 @@ async function buildPdf(D){
   tiles.forEach((t, i) => { const x = M + i * (tw + 8); doc.setFillColor(...soft); doc.roundedRect(x, y, tw, 54, 6, 6, 'F');
     font(15, 'bold', i === 4 && D.falls ? coral : navy); txt(t[1], x + 8, y + 24); font(7.5, 'normal', muted); txt(t[0], x + 8, y + 42); });
   y += 70;
+  if(D.notes){
+    section(D.notes.by === 'claude' ? 'Summary · drafted by Claude' : 'Summary');
+    font(10, 'normal', ink);
+    D.notes.clinician.forEach(b => { doc.splitTextToSize('•  ' + b, W - 2 * M).forEach(l => { need(14); txt(l, M, y); y += 13; }); });
+    font(8, 'normal', muted); need(12);
+    txt(D.notes.by === 'claude' ? 'Restates the measurements below; every number was checked against them. Not a clinical interpretation.' : 'Written from the measurements below.', M, y); y += 8;
+  }
   section('Walking sessions · ankle sensor');
   if(D.walks.length) table([['Date', 66], ['Start', 44], ['Duration', 56], ['Steps', 46], ['Cadence', 60], ['Avg swing', 64], ['Stride var.', 64], ['Symmetry', 58], ['Falls', 49]],
     D.walks.map(w => [dDate(w.at), dTime(w.at), mmss(w.durationSec) + (w.partial ? '*' : ''), w.steps, w.cadence == null ? '–' : w.cadence + '/min',
@@ -2263,6 +2274,78 @@ async function buildPdf(D){
   }
   return doc.output('blob');
 }
+
+/* ---------- Claude: care-team note + family update for the report ----------
+   Claude (claude-haiku-4-5, through the Mana bridge) restates the report's own measurements twice: three factual bullets
+   for clinicians and a short warm update for family. Guard: every number Claude writes must already be in the data it was
+   given; otherwise (or offline / slow) Steady uses its own template sentences instead. */
+const CLAUDE = { id:0, wait:{} };
+function askClaude(system, user){
+  return new Promise((res, rej) => {
+    if(!HW.inMana) return rej(new Error('offline'));
+    const id = ++CLAUDE.id; CLAUDE.wait[id] = { res, rej };
+    toParent('claude', { id, system, user });
+    setTimeout(() => { if(CLAUDE.wait[id]){ delete CLAUDE.wait[id]; rej(new Error('timeout')); } }, 14000);
+  });
+}
+function onClaudeResult(d){
+  const w = d && CLAUDE.wait[d.id]; if(!w) return; delete CLAUDE.wait[d.id];
+  if(d.error) w.rej(new Error(d.error)); else w.res(d.text || '');
+}
+const CARE_SYSTEM = 'You write short notes for Steady, a post-stroke home-recovery app. You receive one JSON object of measurements. '
+ + 'Rules: use only numbers that appear in the JSON, copied exactly; never invent, estimate, round differently or compute new numbers; '
+ + 'describe only: never diagnose, interpret trends as good or bad, judge risk, or recommend tests, measurements, medication or treatment; if a value is null or has 0 attempts, say it was not measured yet; '
+ + 'call anything under demoHistory demonstration data; no emojis, no markdown. '
+ + 'Reply with JSON only, no code fence: {"clinician": [three factual bullet strings for a physician or therapist, at most 22 words each], '
+ + '"family": "at most 55 words in warm plain language for the patient\'s family, naming the patient by first name, with one concrete thing she did if the data has one, and one simple way to spend time together such as joining a walk or naming things around the house, no medical advice or predictions"}';
+function careFacts(D){
+  const sym = D.walks.slice().reverse().find(w => w.symmetry != null);
+  const sp = S.speech;
+  return {
+    patient:{ firstName:S.name, age:34, condition:'left-side stroke, 11 weeks ago' },
+    walking:{ walksRecorded:D.walks.length, stepsMeasured:D.steps, cadencePerMin:D.cadence == null ? null : D.cadence,
+      strideVariationPct:D.lastCv == null ? null : Math.round(D.lastCv * 10) / 10, legSymmetryPct:sym ? sym.symmetry : null },
+    armRaises:{ reachedTarget:D.reps || 0, attempts:D.attempts || 0 },
+    possibleFalls:D.falls, safetyEvents:D.events.length,
+    speechToday:{ correct:sp.correctN || 0, attempts:sp.triesN || 0 },
+    demoHistory:{ medianNamingLatencySec:+D.latency.toFixed(1), weeklySwingRatio:D.weeks.map(v => +v.toFixed(2)) }
+  };
+}
+function numbersOk(text, facts){
+  const allowed = new Set((JSON.stringify(facts).match(/\d+(\.\d+)?/g) || []).map(Number));
+  return (String(text).match(/\d+(\.\d+)?/g) || []).every(n => allowed.has(Number(n)));
+}
+function templateNotes(f){
+  const w = f.walking, c = [];
+  c.push(w.walksRecorded ? `${w.walksRecorded} walk(s) recorded, ${w.stepsMeasured} steps, cadence ${w.cadencePerMin == null ? 'not measured' : w.cadencePerMin + '/min'}, stride variation ${w.strideVariationPct == null ? 'not measured' : w.strideVariationPct + '%'}.` : 'No sensor walks recorded yet.');
+  c.push(`Speech today: ${f.speechToday.correct} of ${f.speechToday.attempts} words correct. Arm raises: ${f.armRaises.attempts ? f.armRaises.reachedTarget + ' of ' + f.armRaises.attempts + ' on target' : 'not measured yet'}.`);
+  c.push(`${f.possibleFalls} possible fall(s), ${f.safetyEvents} safety event(s) logged.`);
+  const fam = w.walksRecorded ? `${f.patient.firstName} walked ${w.stepsMeasured} steps with Steady today. Ask her to show you her walk, or join the next one.`
+    : `${f.patient.firstName} is practising with Steady. Sitting with her for five minutes of word practice helps.`;
+  return { clinician:c, family:fam, by:'template' };
+}
+async function careNotes(D){
+  const f = careFacts(D);
+  try{
+    const raw = await askClaude(CARE_SYSTEM, JSON.stringify(f));
+    const j = JSON.parse(String(raw).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
+    const clin = Array.isArray(j.clinician) ? j.clinician.map(String).filter(Boolean).slice(0, 3) : [];
+    const fam = String(j.family || '').trim();
+    if(clin.length && fam && numbersOk(clin.join(' ') + ' ' + fam, f)) return { clinician:clin, family:fam, by:'claude' };
+    const t = templateNotes(f); t.why = 'numbers'; return t;
+  }catch(e){ return templateNotes(f); }
+}
+function notesHTML(N){
+  if(!N) return `<div class="carenote"><p class="eyebrow">Care-team note</p><p class="plain" style="margin:0">Claude is writing a short note from these numbers…</p></div>`;
+  const by = N.by === 'claude' ? 'drafted by Claude · every number checked against this report' : 'written by Steady from the numbers above';
+  return `<div class="carenote">
+      <p class="eyebrow">For the care team · ${by}</p>
+      <ul>${N.clinician.map(b => `<li>${esc(b)}</li>`).join('')}</ul>
+      <p class="eyebrow" style="margin-top:12px">For family</p>
+      <p class="plain" style="margin:0 0 10px">${esc(N.family)}</p>
+      <button type="button" class="btn sec sm" data-action="report" data-arg="family">Share with family</button>
+    </div>`;
+}
 function reportSheetHTML(D, state){
   const who = S.providers.map(p => `<span class="chip">${esc(p.name)}</span>`).join(' ');
   const btns = state === 'ready'
@@ -2284,6 +2367,7 @@ function reportSheetHTML(D, state){
       <dt>Possible falls</dt><dd class="num">${D.falls}</dd>
       <dt>Safety log</dt><dd>${D.events.length} event${D.events.length === 1 ? '' : 's'}</dd>
     </dl>
+    ${notesHTML(D.notes)}
     <div class="row-inline">${who}</div>
     ${btns}
     <p class="meta">Send opens your phone’s share sheet, so you choose Mail, Messages or AirDrop. Your care team decides what it means.</p>`;
@@ -2291,6 +2375,8 @@ function reportSheetHTML(D, state){
 async function openReport(){
   const D = reportData(); REPORT = { D, files:null };
   openSheet('Report for your doctor', reportSheetHTML(D, 'preparing'));
+  D.notes = await careNotes(D);
+  if(!$('#sheet').hidden) openSheet('Report for your doctor', reportSheetHTML(D, 'preparing'));
   const stamp = dDate(D.now), csv = new File([buildCsv(D)], `Steady-data-${stamp}.csv`, { type:'text/csv' });
   try{
     const pdf = await buildPdf(D);
@@ -2307,6 +2393,13 @@ function downloadFile(f){
 }
 async function reportAction(arg){
   if(arg === 'open') return openReport();
+  if(arg === 'family'){
+    const t = REPORT && REPORT.D && REPORT.D.notes && REPORT.D.notes.family; if(!t) return;
+    try{ if(navigator.share){ await navigator.share({ title:'Update from Steady', text:t }); return; } }catch(e){ if(e && e.name === 'AbortError') return; }
+    try{ await navigator.clipboard.writeText(t); toast('<span><b>Copied.</b> Paste it into your family chat.</span>', 4000); }
+    catch(e){ toast('<span>Couldn’t copy here. Long-press the text to copy it.</span>', 4000); }
+    return;
+  }
   const f = REPORT && REPORT.files; if(!f) return;
   if(arg === 'pdf'){ const p = f.find(x => /pdf$/.test(x.name)); if(p) downloadFile(p); return; }
   if(arg === 'csv'){ downloadFile(f.find(x => /csv$/.test(x.name))); return; }
@@ -2390,6 +2483,7 @@ function hwBoot(){
     if(m.steady === 'sessions'){ HW.remoteSessions = Array.isArray(m.data) ? m.data : []; HW.dirty = true; }
     if(m.steady === 'ttsAudio') onTtsAudio(m.data || {});
     if(m.steady === 'sttResult') onSttResult(m.data || {});
+    if(m.steady === 'claudeResult') onClaudeResult(m.data || {});
   });
   toParent('ready', {});
   setInterval(() => {

@@ -12,8 +12,9 @@ function UserDiv() {
      also for logged-out visitors */
   const { url: elUrl } = useManaRouter('elevenlabs');
   const store = useStorageUrl('voice');
-  const elRef = React.useRef(null), storeRef = React.useRef(null);
-  elRef.current = elUrl; storeRef.current = store;
+  const { url: anUrl } = useManaRouter('anthropic');
+  const elRef = React.useRef(null), storeRef = React.useRef(null), anRef = React.useRef(null);
+  elRef.current = elUrl; storeRef.current = store; anRef.current = anUrl;
   const addr = (...p) => (typeof relPathAddress === 'function' ? relPathAddress(...p) : null);
 
   React.useEffect(() => {
@@ -39,6 +40,17 @@ function UserDiv() {
         const j = await r.json();
         post('sttResult', { id, text: j.text || '' });
       } catch (e) { post('sttResult', { id, error: String(e && e.message || e) }); }
+    };
+    /* care-team note and family update for the report: Claude Haiku through Mana (owner's credits) */
+    const claude = async ({ id, system, user }) => {
+      try {
+        if (!anRef.current) throw new Error('claude not ready');
+        const r = await fetch(anRef.current + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 500, system: String(system || '').slice(0, 4000), messages: [{ role: 'user', content: String(user || '').slice(0, 6000) }] }) });
+        if (!r.ok) throw new Error('claude ' + r.status);
+        const j = await r.json();
+        post('claudeResult', { id, text: (j.content || []).map(c => c.text || '').join('') });
+      } catch (e) { post('claudeResult', { id, error: String(e && e.message || e) }); }
     };
     const tts = async ({ id, text, voice, key }) => {
       try {
@@ -69,6 +81,7 @@ function UserDiv() {
       if (m.steady === 'ready') { post('config', { canPublish: isOwner }); post('sessions', latest.sessions); if (latest.live) post('relay', latest.live); }
       if (m.steady === 'tts' && m.data) { tts(m.data); return; }
       if (m.steady === 'stt' && m.data) { stt(m.data); return; }
+      if (m.steady === 'claude' && m.data) { claude(m.data); return; }
       if (m.steady === 'publish' && isOwner && m.data) { try { const p = FS.set(FS.ref(FS.db, addr('live')), m.data, false); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
       if (m.steady === 'saveSession' && isOwner && m.data && m.data.id) {
         const now = Date.now();
