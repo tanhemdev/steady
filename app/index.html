@@ -1921,8 +1921,10 @@ function hwDrop(id, quiet){
   hwRender(true);
 }
 function hwDisconnect(){
-  Object.keys(HW.devs).forEach(id => { const c = HW.devs[id].close; hwDrop(id, true); try{ c && c(); }catch(e){} });
-  HW.status = 'Disconnected. The trace is simulated again.'; hwRender(true);
+  HW.relayMuteUntil = Date.now() + 4000;
+  Object.keys(HW.devs).forEach(id => { const c = HW.devs[id].close; try{ c && c(); }catch(e){} hwDrop(id, true); });
+  HW.relay = null;
+  HW.status = 'Disconnected. You can connect again any time.'; hwRender(true);
 }
 async function hwConnectBle(){
   if(!navigator.bluetooth){
@@ -1933,7 +1935,10 @@ async function hwConnectBle(){
   try{ dev = await navigator.bluetooth.requestDevice({ filters:[{ namePrefix:'NeuroSync' }, { namePrefix:'Steady' }], optionalServices:[NUS.svc] }); }
   catch(e){ if(!e || e.name !== 'NotFoundError'){ HW.status = 'Could not open Bluetooth: ' + ((e && e.message) || e); hwRender(true); } return; }
   const id = 'ble:' + dev.id;
-  if(HW.devs[id]){ HW.status = (dev.name || 'That sensor') + ' is already connected.'; hwRender(true); return; }
+  if(HW.devs[id]){
+    if(dev.gatt && dev.gatt.connected){ HW.status = (dev.name || 'That sensor') + ' is already connected.'; hwRender(true); return; }
+    const old = HW.devs[id].close; hwDrop(id, true); try{ old && old(); }catch(e){}
+  }
   const name = dev.name || 'Sensor';
   HW.status = 'Connecting to ' + name + '…'; hwRender(true);
   try{
@@ -1943,11 +1948,17 @@ async function hwConnectBle(){
     let q = Promise.resolve();
     const send = cmd => { const b = new TextEncoder().encode(cmd);
       q = q.then(() => (rx.writeValueWithResponse ? rx.writeValueWithResponse(b) : rx.writeValue(b))).catch(() => {}); };
-    hwAdd(id, name, 'Bluetooth', send, () => { try{ dev.gatt.disconnect(); }catch(e){} });
     const dec = new TextDecoder();
-    tx.addEventListener('characteristicvaluechanged', ev => dec.decode(ev.target.value).split(/\r?\n/).forEach(s => { if(s.trim()) hwLine(id, s); }));
+    const onVal = ev => dec.decode(ev.target.value).split(/\r?\n/).forEach(s => { if(s.trim()) hwLine(id, s); });
+    const onGone = () => { tx.removeEventListener('characteristicvaluechanged', onVal); dev.removeEventListener('gattserverdisconnected', onGone); hwDrop(id); };
+    hwAdd(id, name, 'Bluetooth', send, () => {
+      tx.removeEventListener('characteristicvaluechanged', onVal); dev.removeEventListener('gattserverdisconnected', onGone);
+      try{ tx.stopNotifications().catch(() => {}); }catch(e){}
+      try{ if(dev.gatt.connected) dev.gatt.disconnect(); }catch(e){}
+    });
+    tx.addEventListener('characteristicvaluechanged', onVal);
+    dev.addEventListener('gattserverdisconnected', onGone);
     await tx.startNotifications();
-    dev.addEventListener('gattserverdisconnected', () => hwDrop(id));
     send(HW.mode === 'arm' ? 'm0' : 'm1');
   }catch(e){
     HW.status = 'Could not connect to ' + name + ': ' + ((e && e.message) || e);
@@ -1958,15 +1969,34 @@ async function hwConnectBle(){
 async function hwConnectUsb(){
   if(!('serial' in navigator)){ HW.status = 'USB isn’t available in this browser. Use Chrome or Edge on a laptop.'; hwRender(true); return; }
   let port;
-  try{ port = await navigator.serial.requestPort(); await port.open({ baudRate:115200 }); }
-  catch(e){ if(e && e.name !== 'NotFoundError'){ HW.status = 'Could not open the port: ' + (e.message || e) + '. Close the Arduino Serial Monitor first.'; hwRender(true); } return; }
+  try{ port = await navigator.serial.requestPort(); }
+  catch(e){ if(e && e.name !== 'NotFoundError'){ HW.status = 'Could not open USB: ' + (e.message || e); hwRender(true); } return; }
+  /* the same port picked again: close our earlier link to it first */
+  const prev = Object.keys(HW.devs).find(k => HW.devs[k].port === port);
+  if(prev){ const c = HW.devs[prev].close; hwDrop(prev, true); try{ c && await c(); }catch(e){} }
+  try{ await port.open({ baudRate:115200 }); }
+  catch(e){
+    if(e && e.name === 'InvalidStateError'){ try{ await port.close(); await port.open({ baudRate:115200 }); }catch(x){
+      HW.status = 'The sensor’s USB port is still busy. Unplug it, plug it back in, then tap Connect by USB.'; hwRender(true); return; } }
+    else { HW.status = 'Could not open the port: ' + (e.message || e) + '. Close the Arduino Serial Monitor first.'; hwRender(true); return; }
+  }
   const id = 'usb:' + Date.now();
-  let writer = null, reader = null, closing = false;
+  let writer = null, reader = null, closing = false, closed = null;
+  const dec = new TextDecoderStream();
+  const piped = port.readable.pipeTo(dec.writable).catch(() => {});
+  reader = dec.readable.getReader();
   try{ writer = port.writable.getWriter(); }catch(e){}
-  hwAdd(id, 'USB sensor', 'USB', cmd => { try{ writer && writer.write(new TextEncoder().encode(cmd + '\n')); }catch(e){} },
-    async () => { closing = true; try{ reader && await reader.cancel(); }catch(e){} try{ writer && writer.releaseLock(); }catch(e){} try{ await port.close(); }catch(e){} });
+  const shut = () => closed || (closed = (async () => {
+    closing = true;
+    try{ await reader.cancel(); }catch(e){}
+    await piped;
+    try{ reader.releaseLock(); }catch(e){}
+    try{ writer && writer.releaseLock(); }catch(e){}
+    try{ await port.close(); }catch(e){}
+  })());
+  hwAdd(id, 'USB sensor', 'USB', cmd => { try{ writer && writer.write(new TextEncoder().encode(cmd + '\n')).catch(() => {}); }catch(e){} }, shut);
+  HW.devs[id].port = port;
   HW.devs[id].send(HW.mode === 'arm' ? 'm0' : 'm1');
-  try{ reader = port.readable.pipeThrough(new TextDecoderStream()).getReader(); }catch(e){ hwDrop(id); return; }
   let buf = '';
   try{
     while(true){
@@ -1976,7 +2006,9 @@ async function hwConnectUsb(){
       while((i = buf.indexOf('\n')) >= 0){ const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if(line) hwLine(id, line); }
     }
   }catch(e){}
-  hwDrop(id, closing);
+  const wasClosing = closing;
+  shut();
+  hwDrop(id, wasClosing);
 }
 function hwSetMode(m){
   if(HW.mode === 'arm' && m !== 'arm' && S.arm.attempts.length) hwSaveArm();
@@ -2044,6 +2076,7 @@ function hwPublish(final){
 }
 function hwRelay(v){
   if(hwLocal()) return;
+  if(HW.relayMuteUntil && Date.now() < HW.relayMuteUntil && HW.canPublish) return;
   if(!v || !v.live || Math.abs(Date.now() - (v.at || 0)) > 120000){ if(HW.relay){ HW.relay = null; hwRender(true); } return; }
   if(v.seq === HW.relaySeq) return;
   HW.relaySeq = v.seq; HW.relayAt = Date.now();
@@ -2098,8 +2131,8 @@ function hwCardHTML(){
         ${src.mode === 'walk' ? `<button type="button" class="btn ${src.rec ? 'danger' : 'go'} sm" data-action="hw" data-arg="${src.rec ? 'stop' : 'start'}">${src.rec ? 'Stop walk' : 'Start walk'}</button>` : ''}
       </div>
       ${status}${fall}
-      <div class="row-inline"><button type="button" class="copy" data-action="hw" data-arg="add">Add a sensor</button>
-        <button type="button" class="copy" data-action="hw" data-arg="disconnect">Disconnect</button></div>
+      <div class="btnrow"><button type="button" class="btn sec sm" data-action="hw" data-arg="add">Add a sensor</button>
+        <button type="button" class="btn sec sm" data-action="hw" data-arg="disconnect">Disconnect</button></div>
     </div>`;
   }
   if(HW.relay){
@@ -2109,6 +2142,7 @@ function hwCardHTML(){
       <p class="plain">You’re watching ${esc(S.name)}’s sensor in real time. The station runs the session.</p>
       <div class="row-inline">${(src.devices || []).map(d => `<span class="chip">${esc(d.name)}</span>`).join('')}</div>
       ${fall}
+      ${(bt || usb) ? `<div class="btnrow">${bt ? '<button type="button" class="btn sec sm" data-action="hw" data-arg="ble">Connect a sensor here</button>' : ''}${usb ? '<button type="button" class="btn sec sm" data-action="hw" data-arg="usb">USB</button>' : ''}</div>` : ''}
     </div>`;
   }
   return `<div class="card">
@@ -2571,11 +2605,7 @@ function renderWalk(){
       <p class="meta">This is a trend for your physio to read. It is not a diagnosis.</p>
     </div>
     <div id="armsec"></div>
-    <div class="card">
-      <div class="sectitle"><h3>Demo</h3><span class="chip">For judges</span></div>
-      <div class="scen">${scenButtons()}</div>
-      <p class="meta">${esc(S.gait.serial)} · the Steady sensor streams over Bluetooth or USB.</p>
-    </div>`;
+`;
   renderArm();
 }
 
@@ -2629,7 +2659,6 @@ function renderCare(){
       <button type="button" class="cta" data-action="report" data-arg="open">Create report<svg width="20" height="20"><use href="#ic-chev"/></svg></button>
     </div>
     <div class="sectitle"><h3>Emergency contacts</h3></div>
-    <p class="lede">We call these three, in this order.</p>
     ${S.contacts.map((c,i)=>personCard(c,'emg',i===0)).join('')}
     <div class="sectitle" style="margin-top:6px"><h3>Your doctors</h3></div>
     ${S.providers.map(p=>personCard(p,'care')).join('')}
