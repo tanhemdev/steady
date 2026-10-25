@@ -1,0 +1,277 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NeuroSync Motion</title>
+<style>
+:root{--bg:#eef6f4;--ink:#1f3a3d;--teal:#5fa8a0;--blue:#4a7fb0;--miss:#e0a458;--track:#d6e9ee;--card:#fff;--red:#c94f4f}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:16px;display:flex;flex-direction:column;align-items:center}
+.tabs{display:flex;background:var(--track);border-radius:14px;padding:4px;margin:4px 0 10px}
+.tabs button{background:none;color:var(--ink);font-size:18px;padding:10px 26px;margin:0}
+.tabs button.on{background:var(--blue);color:#fff}
+button{font-size:17px;padding:11px 20px;border:0;border-radius:11px;background:var(--blue);color:#fff;margin:4px;cursor:pointer}
+button:disabled{background:#9bb3c8;cursor:default}
+button.go{background:var(--teal);font-size:22px;padding:14px 40px}
+button.stop{background:var(--miss);font-size:22px;padding:14px 40px}
+#status{font-weight:600;margin:6px 0;text-align:center;min-height:22px}
+.big{font-size:84px;font-weight:700;line-height:1;margin:8px 0;text-align:center}
+.unit{font-size:20px;font-weight:600}
+.gauge{position:relative;width:min(420px,90vw);height:24px;background:var(--track);border-radius:12px;margin:6px 0 30px}
+.fill{height:100%;width:0;background:var(--teal);border-radius:12px;transition:width .15s}
+.mark{position:absolute;top:-6px;bottom:-6px;width:3px;background:var(--ink)}
+.marklabel{position:absolute;top:30px;transform:translateX(-50%);font-size:13px;white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;width:min(460px,94vw);margin:6px 0}
+.stats.three{grid-template-columns:repeat(3,1fr)}
+.stat{background:var(--card);border-radius:14px;padding:12px;text-align:center}
+.stat b{display:block;font-size:28px}
+.stat span{font-size:13px}
+.row{display:flex;align-items:center;justify-content:center;gap:6px;margin:8px 0;flex-wrap:wrap}
+input{width:70px;font-size:18px;padding:6px;border-radius:8px;border:1px solid #9bb3c8;text-align:center}
+.chips{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:560px;margin:8px 0}
+.chip{padding:5px 10px;border-radius:999px;font-size:14px;font-weight:600;color:#fff;background:var(--teal)}
+.chip.miss{background:var(--miss)}
+.note{font-size:13px;opacity:.75;text-align:center;max-width:460px}
+.hide{display:none!important}
+.card{background:var(--card);border-radius:14px;padding:10px 12px;width:min(640px,94vw);margin:8px 0}
+.card h3{margin:2px 0 6px;font-size:15px}
+canvas{width:100%;height:170px;display:block}
+#tiltLine{font-weight:600;font-size:15px;margin:6px 0}
+#fall{position:fixed;inset:0;background:rgba(201,79,79,.96);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;z-index:9}
+#fall h1{font-size:40px;margin:0 0 10px}
+#fall button{background:#fff;color:var(--red);font-size:22px;padding:14px 36px;margin-top:18px}
+#summary{flex-direction:column;align-items:center;display:flex}
+</style></head><body>
+<div id="fall" class="hide"><h1>Possible fall detected</h1><div id="fallMsg">Check on the patient now.</div><button id="okBtn">I'm OK</button></div>
+
+<button id="connect">Connect to sensor (Bluetooth)</button>
+<div id="status">Not connected — turn on the sensor, then tap Connect</div>
+<div class="tabs"><button id="tArm" class="on">Arm raises</button><button id="tWalk">Walking</button></div>
+<button id="cal" disabled>Calibrate (hold still)</button>
+
+<div id="arm">
+  <div class="big"><span id="angle">0</span>°</div>
+  <div class="gauge"><div class="fill" id="fill"></div><div class="mark" id="mark"></div><div class="marklabel" id="ml">Target 60°</div></div>
+  <div class="stats">
+    <div class="stat"><b id="reps">0</b><span>Reached target</span></div>
+    <div class="stat"><b id="missed">0</b><span>Missed</span></div>
+    <div class="stat"><b id="avg">–</b><span>Average height</span></div>
+    <div class="stat"><b id="best">–</b><span>Best height</span></div>
+  </div>
+  <div class="row">Target height: <input id="tval" type="number" min="10" max="170" value="60">° <button id="tset" disabled>Set</button></div>
+  <div class="chips" id="armChips"></div>
+  <div class="note">Sensor on the forearm. Sit with the arm resting at your side, tap Calibrate, then raise the arm forward. Green = reached target, orange = missed.</div>
+</div>
+
+<div id="walk" class="hide">
+  <button id="startStop" class="go" disabled>Start</button>
+  <div class="big"><span id="steps">0</span> <span class="unit">steps</span></div>
+  <div class="stats three">
+    <div class="stat"><b id="cad">–</b><span>Cadence (steps/min)</span></div>
+    <div class="stat"><b id="swing">–</b><span>Last leg swing</span></div>
+    <div class="stat"><b id="swingAvg">–</b><span>Avg leg swing</span></div>
+    <div class="stat"><b id="var">–</b><span>Stride variation</span></div>
+    <div class="stat"><b id="stime">0:00</b><span>Session time</span></div>
+    <div class="stat"><b id="falls">0</b><span>Falls detected</span></div>
+  </div>
+  <div id="tiltLine">Leg tilt: –</div>
+  <div class="card"><h3>Leg movement — live (rotation speed, °/s)</h3><canvas id="cLive"></canvas></div>
+  <div class="card"><h3>Leg swing per stride (°)</h3><canvas id="cSwing"></canvas></div>
+  <div class="card"><h3>Stride time per stride (seconds)</h3><canvas id="cStride"></canvas></div>
+
+  <div id="summary" class="hide">
+    <h2 style="margin:14px 0 4px">Session summary</h2>
+    <div class="stats three">
+      <div class="stat"><b id="sDur">–</b><span>Duration</span></div>
+      <div class="stat"><b id="sSteps">–</b><span>Steps</span></div>
+      <div class="stat"><b id="sCad">–</b><span>Avg cadence</span></div>
+      <div class="stat"><b id="sSwing">–</b><span>Avg leg swing</span></div>
+      <div class="stat"><b id="sVar">–</b><span>Stride variation</span></div>
+      <div class="stat"><b id="sFalls">–</b><span>Falls</span></div>
+    </div>
+    <div class="card"><h3>Whole session — every data point (rotation speed, °/s). Dots = strides, red lines = falls</h3><canvas id="cAll" style="height:220px"></canvas></div>
+    <button id="csv">Download data (CSV)</button>
+  </div>
+  <div class="note">Sensor on the shin or ankle. Stand still, tap Calibrate, then Start and walk. Steps are counted from the strapped leg (each stride = 2 steps). Stride variation: lower = steadier walking. A possible fall is flagged if the leg stays tilted past 60° for 3 seconds (1.5 s after a hard jolt), so calibrate while standing.</div>
+</div>
+
+<script>
+const SVC='6e400001-b5a3-f393-e0a9-e50e24dcca9e', RX='6e400002-b5a3-f393-e0a9-e50e24dcca9e', TX='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const $=id=>document.getElementById(id);
+let dev=null, rxChar=null, connected=false;
+let mode='arm', target=60, rec=false, sessSec=0, recStart=0;
+let arm=[], live=[], sessSig=[], strides=[], falls=[], fallShown=false, liveT=0;
+
+// ---------- Bluetooth ----------
+async function send(cmd){
+  if(!rxChar)return;
+  const data=new TextEncoder().encode(cmd);
+  try{ rxChar.writeValueWithResponse?await rxChar.writeValueWithResponse(data):await rxChar.writeValue(data); }
+  catch(e){ $('status').textContent='Could not send to sensor: '+e.message; }
+}
+function setConnected(on,name){
+  connected=on;
+  ['cal','tset','startStop'].forEach(id=>$(id).disabled=!on);
+  $('connect').textContent=on?'Disconnect':'Connect to sensor (Bluetooth)';
+  $('status').textContent=on?'Connected to '+name+' ✓':'Not connected — turn on the sensor, then tap Connect';
+}
+$('connect').onclick=async()=>{
+  if(connected&&dev){dev.gatt.disconnect();return;}
+  if(!navigator.bluetooth){$('status').textContent='This browser has no Bluetooth support. Use Google Chrome on a laptop or Android phone.';return;}
+  try{
+    dev=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'NeuroSync'}],optionalServices:[SVC]});
+    $('status').textContent='Connecting to '+dev.name+'…';
+    dev.addEventListener('gattserverdisconnected',()=>{rxChar=null;setConnected(false);$('status').textContent='Sensor disconnected — tap Connect to reconnect';});
+    const server=await dev.gatt.connect();
+    const svc=await server.getPrimaryService(SVC);
+    const tx=await svc.getCharacteristic(TX);
+    rxChar=await svc.getCharacteristic(RX);
+    tx.addEventListener('characteristicvaluechanged',e=>handleLine(new TextDecoder().decode(e.target.value)));
+    await tx.startNotifications();
+    setConnected(true,dev.name);
+    send(mode=='walk'?'m1':'m0');
+  }catch(e){
+    if(e.name!='NotFoundError')$('status').textContent='Could not connect: '+e.message;
+  }
+};
+
+// ---------- buttons ----------
+function setMode(m){mode=m;$('tArm').classList.toggle('on',m=='arm');$('tWalk').classList.toggle('on',m=='walk');
+  $('arm').classList.toggle('hide',m!='arm');$('walk').classList.toggle('hide',m!='walk');drawAll();}
+$('tArm').onclick=()=>{setMode('arm');send('m0');};
+$('tWalk').onclick=()=>{setMode('walk');send('m1');};
+$('cal').onclick=()=>{send('c');$('status').textContent='Calibrating — hold still…';};
+$('tset').onclick=()=>{const t=+$('tval').value;if(t>=10&&t<=170)send('t'+t);};
+$('startStop').onclick=()=>send(rec?'x':'s');
+$('okBtn').onclick=()=>{send('o');$('fall').classList.add('hide');fallShown=false;};
+
+// ---------- helpers ----------
+function mmss(s){s=Math.round(s);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');}
+function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
+function cv(a){if(a.length<3)return -1;const m=mean(a);return 100*Math.sqrt(mean(a.map(x=>(x-m)*(x-m))))/m;}
+const strideTimes=()=>strides.map(s=>s.ms).filter(x=>x>0);
+
+// ---------- incoming lines ----------
+function handleLine(line){
+  const p=line.trim().split(','), k=p[0], n=p.slice(1).map(Number);
+  switch(k){
+    case 'L':{ // rot,tilt,angle
+      liveT++;
+      live.push([liveT/20,n[0]]); if(live.length>200)live.shift();
+      if(rec)sessSig.push([(performance.now()-recStart)/1000,n[0]]);
+      $('angle').textContent=n[2];
+      $('fill').style.width=Math.min(n[2]/180*100,100)+'%';
+      $('tiltLine').dataset.tilt=n[1];
+      break;}
+    case 'T':{ // rec,fall,sessDs,fallInDs
+      const wasRec=rec; rec=n[0]==1; sessSec=n[2]/10;
+      $('startStop').textContent=rec?'Stop':'Start'; $('startStop').className=rec?'stop':'go';
+      $('stime').textContent=mmss(rec?sessSec:sessSec);
+      const tilt=$('tiltLine').dataset.tilt||'–';
+      $('tiltLine').textContent='Leg tilt: '+tilt+'°'+(n[3]>=0?' — fall alert in '+(n[3]/10).toFixed(1)+' s':'');
+      $('tiltLine').style.color=n[3]>=0?'#c94f4f':'';
+      if(n[1]==1&&!fallShown)showFall(); if(n[1]==0&&fallShown){fallShown=false;$('fall').classList.add('hide');}
+      if(wasRec&&!rec)showSummary();
+      break;}
+    case 'M':{ // mode,target,ok
+      const m=n[0]==1?'walk':'arm'; if(m!=mode)setMode(m);
+      target=n[1]; showTarget();
+      if(!n[2])$('status').textContent='Sensor not responding — check the wires';
+      else if(connected&&/not responding/.test($('status').textContent))$('status').textContent='Connected ✓';
+      break;}
+    case 'S':{ // swing,strideMs,tDs
+      strides.push({n:strides.length+1,swing:n[0],ms:n[1],t:n[2]/10}); updateWalkStats(); break;}
+    case 'R':{ // hit,peak,reps,attempts
+      arm.push({hit:n[0]==1,peak:n[1]}); updateArmStats(n[2],n[3]); break;}
+    case 'F':{ falls.push(n[1]>=0?n[1]/10:-1); $('falls').textContent=n[0]; showFall(); break;}
+    case 'C':{ resetAll(); $('status').textContent='Calibrated ✓'+(mode=='walk'?' — tap Start, then walk':' — start raising the arm'); break;}
+    case 'B':{ resetAll(); rec=true; sessSec=0; recStart=performance.now(); $('summary').classList.add('hide'); $('status').textContent='Recording — walk now'; break;}
+    case 'E':{ sessSec=n[0]/10; if(rec){rec=false;showSummary();} $('status').textContent='Session saved — see summary below'; break;}
+    case '!':{ $('status').textContent='Lost contact with the sensor — check the wires'; break;}
+  }
+}
+setInterval(drawAll,150);
+
+function resetAll(){
+  arm=[]; strides=[]; falls=[]; sessSig=[];
+  $('armChips').innerHTML=''; updateArmStats(0,0); updateWalkStats(); $('falls').textContent=0;
+}
+function showTarget(){
+  const pct=Math.min(target/180*100,100);
+  $('mark').style.left='calc('+pct+'% - 1px)';$('ml').style.left=pct+'%';$('ml').textContent='Target '+target+'°';
+  if(document.activeElement!=$('tval'))$('tval').value=target;
+}
+function updateArmStats(reps,att){
+  $('reps').textContent=reps;$('missed').textContent=att-reps;
+  const pk=arm.map(a=>a.peak);
+  $('avg').textContent=pk.length?Math.round(mean(pk))+'°':'–';$('best').textContent=pk.length?Math.max(...pk)+'°':'–';
+  $('armChips').innerHTML=arm.slice(-30).map((a,i,s)=>'<span class="chip'+(a.hit?'':' miss')+'">#'+(arm.length-s.length+i+1)+' '+a.peak+'°</span>').join('');
+}
+function updateWalkStats(){
+  const st=strideTimes().slice(-8);
+  $('steps').textContent=strides.length*2;
+  $('cad').textContent=st.length?Math.round(120000/mean(st)):'–';
+  $('swing').textContent=strides.length?strides[strides.length-1].swing+'°':'–';
+  $('swingAvg').textContent=strides.length?Math.round(mean(strides.map(s=>s.swing)))+'°':'–';
+  const v=cv(st);$('var').textContent=v>=0?v.toFixed(1)+'%':'–';
+}
+function showFall(){
+  if(fallShown)return; fallShown=true;
+  $('fallMsg').textContent='Detected '+(rec?'at '+mmss(sessSec)+' into the session':'just now')+'. Check on the patient.';
+  $('fall').classList.remove('hide'); if(navigator.vibrate)navigator.vibrate([400,200,400,200,400]);
+}
+function showSummary(){
+  const st=strideTimes();
+  $('sDur').textContent=mmss(sessSec);
+  $('sSteps').textContent=strides.length*2;
+  $('sCad').textContent=st.length?Math.round(120000/mean(st)):'–';
+  $('sSwing').textContent=strides.length?Math.round(mean(strides.map(s=>s.swing)))+'°':'–';
+  const v=cv(st);$('sVar').textContent=v>=0?v.toFixed(1)+'%':'–';
+  $('sFalls').textContent=falls.length;
+  $('summary').classList.remove('hide');
+  drawAll();
+}
+$('csv').onclick=()=>{
+  let t='stride,time_s,leg_swing_deg,stride_time_s\n';
+  strides.forEach(s=>{t+=s.n+','+s.t.toFixed(1)+','+s.swing+','+(s.ms?(s.ms/1000).toFixed(3):'')+'\n';});
+  if(falls.length){t+='\nfall,time_s\n';falls.forEach((f,i)=>{t+=(i+1)+','+(f>=0?f.toFixed(1):'')+'\n';});}
+  t+='\nsignal_time_s,rotation_speed_dps\n';sessSig.forEach(p=>{t+=p[0].toFixed(2)+','+p[1]+'\n';});
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));
+  a.download='walk_session.csv';a.click();
+};
+
+// ---------- charts ----------
+function chart(cv_,series,o){
+  const dpr=window.devicePixelRatio||1,W=cv_.clientWidth,H=cv_.clientHeight;if(!W)return;
+  if(cv_.width!=Math.round(W*dpr)){cv_.width=Math.round(W*dpr);cv_.height=Math.round(H*dpr);}
+  const c=cv_.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,W,H);
+  const L=42,R=10,T=8,B=22,pw=W-L-R,ph=H-T-B;
+  const x0=o.xMin,x1=o.xMax>o.xMin?o.xMax:o.xMin+1,y0=o.yMin||0,y1=o.yMax>y0?o.yMax:y0+1;
+  const X=x=>L+(x-x0)/(x1-x0)*pw,Y=y=>T+ph-(Math.min(Math.max(y,y0),y1)-y0)/(y1-y0)*ph;
+  c.font='11px system-ui';c.lineWidth=1;
+  for(let i=0;i<=4;i++){const v=y0+(y1-y0)*i/4,y=Y(v);c.strokeStyle='#d6e9ee';c.beginPath();c.moveTo(L,y);c.lineTo(W-R,y);c.stroke();
+    c.fillStyle='#1f3a3d';c.textAlign='right';c.fillText(o.yFmt?o.yFmt(v):Math.round(v),L-5,y+4);}
+  c.textAlign='center';for(let i=0;i<=4;i++){const v=x0+(x1-x0)*i/4;c.fillText(o.xFmt?o.xFmt(v):Math.round(v),X(v),H-5);}
+  (o.vlines||[]).forEach(v=>{if(v<x0||v>x1)return;c.strokeStyle='#c94f4f';c.lineWidth=2.5;c.beginPath();c.moveTo(X(v),T);c.lineTo(X(v),T+ph);c.stroke();});
+  series.forEach(s=>{if(!s.pts.length)return;c.strokeStyle=s.color;c.lineWidth=2;c.beginPath();
+    s.pts.forEach((p,i)=>{const x=X(p[0]),y=Y(p[1]);i?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();
+    if(s.dots){c.fillStyle=s.color;s.pts.forEach(p=>{c.beginPath();c.arc(X(p[0]),Y(p[1]),3.5,0,7);c.fill();});}});
+  (o.marks||[]).forEach(m=>{if(m<x0||m>x1)return;c.fillStyle='#4a7fb0';c.beginPath();c.arc(X(m),T+ph-5,3.5,0,7);c.fill();});
+  if(o.empty&&!series.some(s=>s.pts.length)){c.fillStyle='#1f3a3d';c.globalAlpha=.5;c.textAlign='center';c.font='14px system-ui';c.fillText(o.empty,L+pw/2,T+ph/2);c.globalAlpha=1;}
+}
+function maxOf(a,f,min){return Math.max(min,...a.map(f))*1.1;}
+function drawAll(){
+  if(mode!='walk')return;
+  const last=live.length?live[live.length-1][0]:0;
+  const lp=live.map(p=>[p[0]-last,p[1]]);
+  chart($('cLive'),[{pts:lp,color:'#5fa8a0'}],{xMin:-10,xMax:0,yMin:0,yMax:maxOf(lp,p=>p[1],200),xFmt:v=>v.toFixed(0)+'s',empty:connected?'Waiting for sensor…':'Connect the sensor'});
+  const sw=strides.map(s=>[s.n,s.swing]), st=strides.filter(s=>s.ms>0).map(s=>[s.n,s.ms/1000]);
+  const n=Math.max(5,strides.length);
+  chart($('cSwing'),[{pts:sw,color:'#4a7fb0',dots:true}],{xMin:1,xMax:n,yMin:0,yMax:maxOf(sw,p=>p[1],60),empty:'Tap Start and walk'});
+  chart($('cStride'),[{pts:st,color:'#e0a458',dots:true}],{xMin:1,xMax:n,yMin:0,yMax:maxOf(st,p=>p[1],1.5),yFmt:v=>v.toFixed(1),empty:'Tap Start and walk'});
+  if(!rec&&sessSig.length){
+    const end=Math.max(sessSec,sessSig[sessSig.length-1][0]);
+    chart($('cAll'),[{pts:sessSig,color:'#5fa8a0'}],{xMin:0,xMax:end,yMin:0,yMax:maxOf(sessSig,p=>p[1],200),
+      xFmt:v=>mmss(v),marks:strides.map(s=>s.t),vlines:falls.filter(t=>t>=0)});
+  }
+}
+showTarget();
+</script></body></html>
