@@ -102,7 +102,7 @@ Only one program can connect to the sensor at a time: close `tools/neurosync_ble
 
 ## Team
 
-Jack Langhoff (Movement) · Maya Van (Care Hub) · Miriya Mayenkar (Memory) · Tanya Hemdev (Speech)
+Jack Langhoff (Movement/Hardware) · Maya Van (Care Hub) · Miriya Mayenkar (Memory) · Tanya Hemdev (Speech)
 
 ## Acknowledgements
 
